@@ -2,7 +2,7 @@ NVCC     := nvcc
 INCLUDES := -Iinclude
 CXXFLAGS := -O2 -std=c++17 $(INCLUDES)
 
-SRC      := src/main.cu src/DijkstraCuda.cu
+SRC      := src/main.cu src/DijkstraCuda.cu src/BellmanFordCuda.cu src/FloydWarshallCuda.cu src/DijkstraCudaOpt.cu
 TARGET   := test_sp
 
 .PHONY: all clean

@@ -37,7 +37,7 @@ void DijkstraCuda::run(int source, std::vector<int>& h_dist) {
   CUDA_CHECK(cudaEventCreate(&stop));
   CUDA_CHECK(cudaEventRecord(start));
 
-  const int threads = 256;
+  const int threads = 65536;
   const int blocks  = (E + threads - 1) / threads;
 
   for (int iter = 0; iter < V; ++iter) {

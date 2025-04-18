@@ -7,6 +7,10 @@ This repository provides a simple framework for benchmarking single‐source sho
 - **Implementations**:
   - Naïve Dijkstra on GPU (`DijkstraCuda`)  
   - Standard Dijkstra on CPU (`DijkstraCpu`)  
+  - Naïve BellmanFord on GPU (`BellmanFordCuda`)  
+  - Standard BellmanFord on CPU (`BellmanFordCpu`)  
+  - Naïve Floyd-Warshall on GPU (`FloydWarshallCuda`)  
+  - Standard Floyd-Warshall on CPU (`FloydWarshallCpu`)  
 - **Automated testing** over multiple randomly generated graphs  
 - **Timestamped CSV** output in `results/`  
 - **Makefile** for one‑step build
@@ -24,10 +28,16 @@ project/
 │   ├── GraphGenerator.h
 │   ├── ShortestPathAlgorithm.h
 │   ├── DijkstraCuda.h
-│   └── DijkstraCpu.h
+│   ├── DijkstraCpu.h
+│   ├── BellmanFordCuda.h
+│   ├── BellmanFordCpu.h
+    ├── FloydWarshallCuda.h
+    └── FloydWarshallCpu.h
 └── src/                   # implementation files
     ├── main.cu
-    └── DijkstraCuda.cu
+    ├── DijkstraCuda.cu
+    ├── BellmandFordCuda.cu
+    └── FloydWarshallCuda.cu
 ```
 
 ---
@@ -82,7 +92,7 @@ This compiles all `.cu` files into the `test_sp` executable.
 ```
 
 - Creates a `results/` directory if missing  
-- Runs each algorithm (`BellmanFordCuda`, `DijkstraCuda`, `DijkstraCpu`) on `runs` different random graphs  
+- Runs each algorithm (`BellmanFordCuda`, `BellmanFordCpu`, `DijkstraCuda`, `DijkstraCpu`) on `runs` different random graphs  
 - Writes a timestamped CSV:  
 
   ```

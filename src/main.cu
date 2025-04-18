@@ -8,6 +8,11 @@
 #include "GraphGenerator.h"
 #include "DijkstraCuda.h"
 #include "DijkstraCpu.h"
+#include "BellmanFordCuda.h"
+#include "BellmanFordCpu.h"
+#include "FloydWarshallCuda.h"
+#include "FloydWarshallCpu.h"
+#include "DijkstraCudaOpt.h"
 
 struct Config {
   int   V         = 1000;
@@ -54,10 +59,21 @@ int main() {
   out << "Algorithm,Run,V,E,Density,TimeMs\n";
 
   std::vector<std::pair<std::string, std::unique_ptr<ShortestPathAlgorithm>>> algos;
-  algos.emplace_back("DijkstraCuda",
-                     std::make_unique<DijkstraCuda>());
+
   algos.emplace_back("DijkstraCpu",
                      std::make_unique<DijkstraCpu>());
+  algos.emplace_back("BellmanFordCuda",
+                     std::make_unique<BellmanFordCuda>());
+  algos.emplace_back("BellmanFordCpu",
+                     std::make_unique<BellmanFordCpu>());
+  algos.emplace_back("FloydWarshallCuda",
+                     std::make_unique<FloydWarshallCuda>());
+  algos.emplace_back("FloydWarshallCpu",
+                     std::make_unique<FloydWarshallCpu>());
+  algos.emplace_back("DijkstraCudaOpt",
+                    std::make_unique<DijkstraCudaOpt>());
+  algos.emplace_back("DijkstraCuda",
+                    std::make_unique<DijkstraCuda>());
 
   for (int run = 0; run < cfg.runs; ++run) {
     auto edges = generateRandomGraph(
