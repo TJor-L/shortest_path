@@ -9,10 +9,14 @@
 #include "DijkstraCuda.h"
 #include "DijkstraCpu.h"
 #include "BellmanFordCuda.h"
+#include "BellmanFordCudaOpt.h"
 #include "BellmanFordCpu.h"
 #include "FloydWarshallCuda.h"
 #include "FloydWarshallCpu.h"
 #include "DijkstraCudaOpt.h"
+#include "DijkstraCudaOpt2.h"
+#include "DijkstraCudaOpt3.h"
+#include "FloydWarshallCudaOpt.h"
 
 struct Config {
   int   V         = 1000;
@@ -62,16 +66,24 @@ int main() {
 
   algos.emplace_back("DijkstraCpu",
                      std::make_unique<DijkstraCpu>());
-  algos.emplace_back("BellmanFordCuda",
-                     std::make_unique<BellmanFordCuda>());
+  algos.emplace_back("BellmanFordCudaOpt",
+                     std::make_unique<BellmanFordCudaOpt>());
   algos.emplace_back("BellmanFordCpu",
                      std::make_unique<BellmanFordCpu>());
+  algos.emplace_back("BellmanFordCuda",
+                      std::make_unique<BellmanFordCuda>());
   algos.emplace_back("FloydWarshallCuda",
                      std::make_unique<FloydWarshallCuda>());
-  algos.emplace_back("FloydWarshallCpu",
-                     std::make_unique<FloydWarshallCpu>());
-  algos.emplace_back("DijkstraCudaOpt",
-                    std::make_unique<DijkstraCudaOpt>());
+//   algos.emplace_back("FloydWarshallCpu",
+//                      std::make_unique<FloydWarshallCpu>());
+  algos.emplace_back("FloydWarshallCudaOpt",
+                    std::make_unique<FloydWarshallCudaOpt>());
+  algos.emplace_back("DijkstraCudaOpt2",
+    std::make_unique<DijkstraCudaOpt2>());
+    algos.emplace_back("DijkstraCudaOpt3",
+        std::make_unique<DijkstraCudaOpt3>());
+//   algos.emplace_back("DijkstraCudaOpt",
+//                    std::make_unique<DijkstraCudaOpt>());
   algos.emplace_back("DijkstraCuda",
                     std::make_unique<DijkstraCuda>());
 

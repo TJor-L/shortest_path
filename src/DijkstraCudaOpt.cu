@@ -1,143 +1,201 @@
-// DijkstraCudaOpt.cu
 #include "DijkstraCudaOpt.h"
 #include <climits>
+#include <cstdio>
+#include <cstdlib>
 #include <cuda_runtime.h>
 #include <vector>
-#include <chrono>
 
-// (identical) neighbor‐relaxation kernel
+#ifndef CUDA_CHECK
+#define CUDA_CHECK(call)                                                     \
+  do {                                                                        \
+    cudaError_t err = call;                                                   \
+    if (err != cudaSuccess) {                                                 \
+      fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__, __LINE__,    \
+              cudaGetErrorString(err));                                      \
+      exit(EXIT_FAILURE);                                                     \
+    }                                                                         \
+  } while (0)
+#endif
+
+// Stage 1: per-block reduction to find local minima
+__global__ void findBlockMins(const int* __restrict__ dist,
+                              const unsigned char* __restrict__ visited,
+                              int* blockMinDist,
+                              int* blockMinIdx,
+                              int N) {
+    extern __shared__ int s[];
+    int* sdist = s;
+    int* sidx  = s + blockDim.x;
+
+    int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    int ld  = INT_MAX, li = -1;
+    if (gid < N && !visited[gid]) {
+        ld = dist[gid];
+        li = gid;
+    }
+    sdist[threadIdx.x] = ld;
+    sidx[threadIdx.x]  = li;
+    __syncthreads();
+
+    for (int offset = blockDim.x / 2; offset > 0; offset >>= 1) {
+        if (threadIdx.x < offset) {
+            int rd = sdist[threadIdx.x + offset];
+            if (rd < sdist[threadIdx.x]) {
+                sdist[threadIdx.x] = rd;
+                sidx[threadIdx.x]  = sidx[threadIdx.x + offset];
+            }
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0) {
+        blockMinDist[blockIdx.x] = sdist[0];
+        blockMinIdx[blockIdx.x]  = sidx[0];
+    }
+}
+
+// Stage 2: global reduction over block minima
+__global__ void findGlobalMin(const int* blockMinDist,
+                              const int* blockMinIdx,
+                              int* outDist,
+                              int* outIdx,
+                              int M) {
+    extern __shared__ int s[];
+    int* sdist = s;
+    int* sidx  = s + blockDim.x;
+
+    int tid = threadIdx.x;
+    int ld  = (tid < M ? blockMinDist[tid] : INT_MAX);
+    int li  = (tid < M ? blockMinIdx[tid]  : -1);
+
+    sdist[tid] = ld;
+    sidx[tid]  = li;
+    __syncthreads();
+
+    for (int offset = blockDim.x / 2; offset > 0; offset >>= 1) {
+        if (tid < offset) {
+            int rd = sdist[tid + offset];
+            if (rd < sdist[tid]) {
+                sdist[tid] = rd;
+                sidx[tid]  = sidx[tid + offset];
+            }
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0) {
+        outDist[0] = sdist[0];
+        outIdx[0]  = sidx[0];
+    }
+}
+
+// Original neighbor-relaxation kernel
 __global__ static void relaxNeighbors(int E, int u,
                                       const int* src,
                                       const int* dst,
                                       const int* w,
                                       int* dist) {
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx >= E) return;
-  if (src[idx] == u) {
-    int du = dist[u];
-    if (du < INT_MAX) {
-      int v  = dst[idx];
-      int nd = du + w[idx];
-      atomicMin(&dist[v], nd);
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= E) return;
+    if (src[idx] == u) {
+        int du = dist[u];
+        if (du < INT_MAX) {
+            int v  = dst[idx];
+            int nd = du + w[idx];
+            atomicMin(&dist[v], nd);
+        }
     }
-  }
-}
-
-// block‐level reduction: each block finds its local best (dist, idx)
-__global__ static void findBlockMin(int V,
-                                    const int* dist,
-                                    const char* visited,
-                                    int* blockBest,
-                                    int* blockIdxOut) {
-  extern __shared__ int sdata[];           // size = 2 * blockDim.x
-  int tid = threadIdx.x;
-  int idx = blockIdx.x * blockDim.x + tid;
-
-  int bestDist = INT_MAX;
-  int bestIdx  = -1;
-  if (idx < V && !visited[idx]) {
-    bestDist = dist[idx];
-    bestIdx  = idx;
-  }
-
-  int* sdist = sdata;                     // first half
-  int* sidx  = sdata + blockDim.x;        // second half
-  sdist[tid] = bestDist;
-  sidx[tid]  = bestIdx;
-  __syncthreads();
-
-  for (int stride = blockDim.x/2; stride > 0; stride >>= 1) {
-    if (tid < stride) {
-      if (sdist[tid + stride] < sdist[tid]) {
-        sdist[tid] = sdist[tid + stride];
-        sidx[tid]  = sidx[tid + stride];
-      }
-    }
-    __syncthreads();
-  }
-
-  if (tid == 0) {
-    blockBest[blockIdx.x]   = sdist[0];
-    blockIdxOut[blockIdx.x] = sidx[0];
-  }
 }
 
 void DijkstraCudaOpt::run(int source, std::vector<int>& h_dist) {
-  int*   d_dist      = nullptr;
-  char*  d_visited   = nullptr;
-  int*   d_blockBest = nullptr;
-  int*   d_blockIdx  = nullptr;
+    // Allocate and initialize distance array
+    int* d_dist = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_dist, V * sizeof(int)));
+    std::vector<int> hostDist(V, INT_MAX);
+    hostDist[source] = 0;
+    CUDA_CHECK(cudaMemcpy(d_dist, hostDist.data(),
+                          V * sizeof(int), cudaMemcpyHostToDevice));
 
-  // allocate device arrays
-  CUDA_CHECK(cudaMalloc(&d_dist,      V * sizeof(int)));
-  CUDA_CHECK(cudaMalloc(&d_visited,   V * sizeof(char)));
+    // Allocate and initialize visited flags on device
+    std::vector<unsigned char> visited(V, 0);
+    unsigned char* d_visited = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_visited, V * sizeof(unsigned char)));
+    CUDA_CHECK(cudaMemcpy(d_visited, visited.data(),
+                          V * sizeof(unsigned char), cudaMemcpyHostToDevice));
 
-  const int threads = 65536;
-  const int blocksE = (E + threads - 1) / threads;
-  const int blocksV = (V + threads - 1) / threads;
-  CUDA_CHECK(cudaMalloc(&d_blockBest, blocksV * sizeof(int)));
-  CUDA_CHECK(cudaMalloc(&d_blockIdx,  blocksV * sizeof(int)));
+    // Prepare per-block minima buffers
+    const int TPB = 256;
+    int blocks1 = (V + TPB - 1) / TPB;
+    int* d_blockMinDist = nullptr;
+    int* d_blockMinIdx  = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_blockMinDist, blocks1 * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_blockMinIdx,  blocks1 * sizeof(int)));
 
-  // host‐side init
-  std::vector<int>  hostDist(V, INT_MAX);
-  std::vector<char> hostVis(V, 0);
-  hostDist[source] = 0;
+    // Create CUDA events for timing
+    cudaEvent_t start, stop;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    CUDA_CHECK(cudaEventRecord(start));
 
-  // copy initial state to device
-  CUDA_CHECK(cudaMemcpy(d_dist,    hostDist.data(), V * sizeof(int),    cudaMemcpyHostToDevice));
-  CUDA_CHECK(cudaMemcpy(d_visited, hostVis.data(),   V * sizeof(char),  cudaMemcpyHostToDevice));
+    // Main Dijkstra loop
+    for (int iter = 0; iter < V; ++iter) {
+        // Stage 1: find local minima per block
+        size_t shared1 = 2 * TPB * sizeof(int);
+        findBlockMins<<<blocks1, TPB, shared1>>>(d_dist,
+                                                 d_visited,
+                                                 d_blockMinDist,
+                                                 d_blockMinIdx,
+                                                 V);
+        CUDA_CHECK(cudaGetLastError());
 
-  // timers
-  cudaEvent_t start, stop;
-  CUDA_CHECK(cudaEventCreate(&start));
-  CUDA_CHECK(cudaEventCreate(&stop));
-  CUDA_CHECK(cudaEventRecord(start));
+        // Stage 2: reduce block minima to global minimum
+        size_t shared2 = 2 * blocks1 * sizeof(int);
+        findGlobalMin<<<1, blocks1, shared2>>>(d_blockMinDist,
+                                               d_blockMinIdx,
+                                               d_blockMinDist,
+                                               d_blockMinIdx,
+                                               blocks1);
+        CUDA_CHECK(cudaGetLastError());
 
-  std::vector<int>  h_blockBest(blocksV);
-  std::vector<int>  h_blockIdx(blocksV);
+        // Copy back the global minimum distance and index
+        int bestDist, u;
+        CUDA_CHECK(cudaMemcpy(&bestDist, d_blockMinDist, sizeof(int),
+                              cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(&u,        d_blockMinIdx,  sizeof(int),
+                              cudaMemcpyDeviceToHost));
 
-  for (int iter = 0; iter < V; ++iter) {
-    // 1) find next u via block reduction
-    findBlockMin<<<blocksV, threads, 2*threads*sizeof(int)>>>(V, d_dist, d_visited, d_blockBest, d_blockIdx);
-    CUDA_CHECK(cudaDeviceSynchronize());
+        // Terminate if no reachable vertex remains
+        if (u < 0 || bestDist == INT_MAX) break;
 
-    // 2) copy block minima back
-    CUDA_CHECK(cudaMemcpy(h_blockBest.data(), d_blockBest, blocksV * sizeof(int), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(h_blockIdx.data(),  d_blockIdx,  blocksV * sizeof(int), cudaMemcpyDeviceToHost));
+        // Mark visited[u] = true on device
+        unsigned char one = 1;
+        CUDA_CHECK(cudaMemcpy(d_visited + u, &one,
+                              sizeof(unsigned char),
+                              cudaMemcpyHostToDevice));
 
-    // 3) host‐side final reduction
-    int u = -1, best = INT_MAX;
-    for (int b = 0; b < blocksV; ++b) {
-      if (h_blockBest[b] < best) {
-        best = h_blockBest[b];
-        u    = h_blockIdx[b];
-      }
+        // Relax neighbors of u
+        relaxNeighbors<<<(E + TPB - 1)/TPB, TPB>>>(E, u,
+                                                   d_src,
+                                                   d_dst,
+                                                   d_w,
+                                                   d_dist);
+        CUDA_CHECK(cudaDeviceSynchronize());
     }
-    if (u < 0 || best == INT_MAX) break;
 
-    // 4) mark visited
-    hostVis[u] = 1;
-    char one = 1;
-    CUDA_CHECK(cudaMemcpy(d_visited + u, &one, sizeof(char), cudaMemcpyHostToDevice));
+    // Record timing and clean up events
+    CUDA_CHECK(cudaEventRecord(stop));
+    CUDA_CHECK(cudaEventSynchronize(stop));
+    CUDA_CHECK(cudaEventElapsedTime(&lastTimeMs, start, stop));
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
 
-    // 5) relax neighbors of u
-    relaxNeighbors<<<blocksE, threads>>>(E, u, d_src, d_dst, d_w, d_dist);
-    CUDA_CHECK(cudaDeviceSynchronize());
-  }
+    // Copy final distances back to host
+    CUDA_CHECK(cudaMemcpy(h_dist.data(), d_dist,
+                          V * sizeof(int), cudaMemcpyDeviceToHost));
 
-  // stop timer
-  CUDA_CHECK(cudaEventRecord(stop));
-  CUDA_CHECK(cudaEventSynchronize(stop));
-  CUDA_CHECK(cudaEventElapsedTime(&lastTimeMs, start, stop));
-
-  // copy final distances back
-  CUDA_CHECK(cudaMemcpy(h_dist.data(), d_dist, V * sizeof(int), cudaMemcpyDeviceToHost));
-
-  // cleanup
-  cudaFree(d_dist);
-  cudaFree(d_visited);
-  cudaFree(d_blockBest);
-  cudaFree(d_blockIdx);
-  cudaEventDestroy(start);
-  cudaEventDestroy(stop);
+    // Clean up
+    cudaFree(d_dist);
+    cudaFree(d_visited);
+    cudaFree(d_blockMinDist);
+    cudaFree(d_blockMinIdx);
 }
